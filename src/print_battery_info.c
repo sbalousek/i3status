@@ -574,6 +574,54 @@ static bool slurp_all_batteries(struct battery_info *batt_info, yajl_gen json_ge
     return true;
 }
 
+static int get_utf8_codepoint_length(const char *codepoint) {
+    if (( *codepoint & 0x80 ) == 0x00 )     // lead bit is zero, must be a single ascii
+        return 1;
+    if (( *codepoint & 0xE0 ) == 0xC0 )     // 110x xxxx
+        return 2;
+    if (( *codepoint & 0xF0 ) == 0xE0 )     // 1110 xxxx
+        return 3;
+    if (( *codepoint & 0xF8 ) == 0xF0 )     // 1111 0xxx
+        return 4;
+
+    return 1;                               // Not UTF-8
+}
+
+static int count_status_bat_values(const char *status_bat) {
+    int count = 0;
+    while (*status_bat) {
+        ++count;
+        status_bat += get_utf8_codepoint_length(status_bat);
+    }
+    return count;
+}
+
+static void get_status_bat_value(char *discharge_status, const char *status_bat, int status_bat_index) {
+    int octets;
+    while (*status_bat) {
+        octets = get_utf8_codepoint_length(status_bat);
+        if (status_bat_index == 0) {
+            memcpy(discharge_status, status_bat, octets);
+            discharge_status[octets] = 0;
+            break;
+        }
+        status_bat += octets;
+        status_bat_index--;
+    }
+}
+
+static void get_battery_discharge_status(char *discharge_status, const char *status_bat, float percentage_remaining) {
+    int status_bat_values = count_status_bat_values(status_bat);
+    int status_bat_index;
+    if (percentage_remaining <= 0.0) {
+        percentage_remaining  = 0.0;
+    } else if (percentage_remaining >= 100.0) {
+        percentage_remaining = 100.0;
+    }
+    status_bat_index = ((percentage_remaining * status_bat_values) / 100.0);
+    get_status_bat_value(discharge_status, status_bat, status_bat_index);
+}
+
 void print_battery_info(yajl_gen json_gen, char *buffer, int number, const char *path, const char *format, const char *format_down, const char *status_chr, const char *status_bat, const char *status_unk, const char *status_full, int low_threshold, char *threshold_type, bool last_full_capacity, const char *format_percentage, bool hide_seconds) {
     char *outwalk = buffer;
     struct battery_info batt_info = {
@@ -658,7 +706,8 @@ void print_battery_info(yajl_gen json_gen, char *buffer, int number, const char 
 
     char string_status[STRING_SIZE];
     char string_percentage[STRING_SIZE];
-    // following variables are not alwasy set. If they are not set they should be empty.
+    char string_battery_status[STRING_SIZE] = "";
+    // following variables are not always set. If they are not set they should be empty.
     char string_remaining[STRING_SIZE] = "";
     char string_emptytime[STRING_SIZE] = "";
     char string_consumption[STRING_SIZE] = "";
@@ -666,10 +715,10 @@ void print_battery_info(yajl_gen json_gen, char *buffer, int number, const char 
     const char *statusstr;
     switch (batt_info.status) {
         case CS_CHARGING:
-            statusstr = status_chr;
-            break;
+            strcpy(string_battery_status, status_chr);
         case CS_DISCHARGING:
-            statusstr = status_bat;
+            get_battery_discharge_status(string_battery_status + strlen(string_battery_status), status_bat, batt_info.percentage_remaining);
+            statusstr = string_battery_status;
             break;
         case CS_FULL:
             statusstr = status_full;
